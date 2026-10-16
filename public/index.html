@@ -17,6 +17,13 @@
   button.primary { background: #0f3d3e; color: #fff; border: none; padding: 9px 16px; border-radius: 4px; cursor: pointer; }
   .err { color: #b42318; margin: 8px 0; }
   .wide { overflow-x: auto; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; background: #e4e7eb; }
+  .badge.FOR_APPROVAL { background: #fef0c7; color: #93370d; }
+  .badge.APPROVED { background: #d1e9ff; color: #175cd3; }
+  .badge.LOCKED { background: #d3f8df; color: #027a48; }
+  .badge.PAID { background: #0f3d3e; color: #fff; }
+  .note { color: #52606d; font-size: 13px; margin: 6px 0; }
+  td button { margin-right: 4px; }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
@@ -123,6 +130,89 @@ function Attendance() {
   </>);
 }
 
+const RUN_ACTIONS = {
+  DRAFT: [['submit', 'Submit for approval', ['ADMIN', 'PAYROLL']]],
+  FOR_APPROVAL: [['approve', 'Approve', ['ADMIN']], ['reject', 'Send back to draft', ['ADMIN']]],
+  APPROVED: [['lock', 'Lock', ['ADMIN', 'PAYROLL']]],
+  LOCKED: [['pay', 'Mark as paid', ['ADMIN']]],
+  PAID: [],
+};
+const RUN_CONFIRM = {
+  approve: 'Approve this payroll? Attendance and payslips for the period will be frozen.',
+  lock: 'Lock this payroll? This cannot be undone.',
+  pay: 'Mark this payroll as paid? This cannot be undone.',
+};
+
+function PayrollRuns({ range }) {
+  const role = localStorage.getItem('role');
+  const [runs, setRuns] = useState([]);
+  const [detail, setDetail] = useState(null);
+  const [label, setLabel] = useState('');
+  const [payDate, setPayDate] = useState('');
+  const [msg, setMsg] = useState('');
+  const load = () => api('/payroll/runs').then(setRuns).catch((e) => setMsg(e.message));
+  const view = (id) => api('/payroll/runs/' + id).then(setDetail).catch((e) => setMsg(e.message));
+  useEffect(() => { load(); }, []);
+
+  const create = async () => {
+    if (!range.from || !range.to) return setMsg('Pick the From and To dates above first.');
+    try {
+      const r = await api('/payroll/runs', { method: 'POST', body: { from: range.from, to: range.to, label: label || undefined, pay_date: payDate || undefined } });
+      setMsg(`Draft run #${r.id} saved: ${r.employees} employees, gross total ${money(r.gross_total)}.`);
+      load(); view(r.id);
+    } catch (e) { setMsg(e.message); }
+  };
+  const step = async (id, action) => {
+    if (RUN_CONFIRM[action] && !window.confirm(RUN_CONFIRM[action])) return;
+    try {
+      await api(`/payroll/runs/${id}/${action}`, { method: 'POST' });
+      setMsg('Done.'); load();
+      if (detail && String(detail.id) === String(id)) view(id);
+    } catch (e) { setMsg(e.message); }
+  };
+
+  return (<>
+    <div className="card">
+      <h3>Payroll runs</h3>
+      <div className="note">Uses the From / To dates above. Saving again while the run is still a draft rebuilds it. Once a run is approved, attendance and payslips for that period are frozen. The person who prepared a run cannot approve it.</div>
+      <input placeholder="Label (optional)" value={label} onChange={(e) => setLabel(e.target.value)} />
+      <input type="date" title="Pay date (defaults to the To date)" value={payDate} onChange={(e) => setPayDate(e.target.value)} />
+      <button className="primary" onClick={create}>Save as payroll run</button>
+      {msg && <div className="err">{msg}</div>}
+    </div>
+    <div className="card wide"><table>
+      <thead><tr><th>Period</th><th>Pay date</th><th>Employees</th><th>Gross total</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+        {runs.length === 0 && <tr><td colSpan="6">No payroll runs yet.</td></tr>}
+        {runs.map((r) => (
+          <tr key={r.id}>
+            <td>{r.label}<div className="note">{r.date_from} to {r.date_to}</div></td>
+            <td>{r.pay_date}</td><td>{r.employees}</td><td>{money(r.gross_total)}</td>
+            <td><span className={'badge ' + r.status}>{r.status.replace('_', ' ')}</span></td>
+            <td>
+              <button onClick={() => view(r.id)}>View</button>
+              {(RUN_ACTIONS[r.status] || []).filter(([, , roles]) => roles.includes(role)).map(([action, text]) => (
+                <button key={action} className={action === 'reject' ? '' : 'primary'} onClick={() => step(r.id, action)}>{text}</button>
+              ))}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table></div>
+    {detail && <div className="card wide">
+      <h3>{detail.label} <span className={'badge ' + detail.status}>{detail.status.replace('_', ' ')}</span></h3>
+      <div className="note">{detail.date_from} to {detail.date_to}. Deductions are not included yet (gross pay only).</div>
+      <table>
+        <thead><tr><th>No.</th><th>Name</th><th>Gross</th><th>Deductions</th><th>Net</th></tr></thead>
+        <tbody>{detail.payslips.map((p) => (
+          <tr key={p.id}><td>{p.employee_no}</td><td>{p.name}</td><td>{money(p.gross_pay)}</td><td>{money(p.total_deductions)}</td><td><b>{money(p.net_pay)}</b></td></tr>
+        ))}</tbody>
+      </table>
+      <button onClick={() => setDetail(null)}>Close</button>
+    </div>}
+  </>);
+}
+
 function Payroll() {
   const [range, setRange] = useState({ from: '', to: '' });
   const [rows, setRows] = useState([]);
@@ -146,6 +236,7 @@ function Payroll() {
           <td>{money(r.basic_pay)}</td><td>{money(r.ot_pay)}</td><td><b>{money(r.gross_pay)}</b></td></tr>
       ))}</tbody>
     </table></div>
+    <PayrollRuns range={range} />
   </>);
 }
 

@@ -9,11 +9,17 @@ const app = express();
 app.use(express.json());
 app.use(express.static('public'));
 
-// Verify the JWT and optionally restrict access to the given roles
-const auth = (...roles) => (req, res, next) => {
+// Verify the JWT, re-check the account in the database (so deactivation and
+// role changes take effect immediately), and optionally restrict by role
+const auth = (...roles) => async (req, res, next) => {
   try {
     const token = (req.headers.authorization || '').replace('Bearer ', '');
-    req.user = jwt.verify(token, process.env.JWT_SECRET);
+    const payload = jwt.verify(token, process.env.JWT_SECRET);
+    const { rows } = await pool.query(
+      `SELECT u.is_active, u.employee_id, r.code AS role
+       FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = $1`, [payload.id]);
+    if (!rows[0] || !rows[0].is_active) return res.status(401).json({ error: 'Unauthorized' });
+    req.user = { id: payload.id, role: rows[0].role, employeeId: rows[0].employee_id };
     if (roles.length && !roles.includes(req.user.role)) return res.status(403).json({ error: 'Forbidden' });
     next();
   } catch {
@@ -38,6 +44,7 @@ app.post('/api/login', wrap(async (req, res) => {
   if (!u || !(await bcrypt.compare(password, u.password_hash))) {
     return res.status(401).json({ error: 'Invalid email or password' });
   }
+  await pool.query('UPDATE users SET last_login_at = now() WHERE id = $1', [u.id]);
   const token = jwt.sign({ id: u.id, role: u.role, employeeId: u.employee_id }, process.env.JWT_SECRET, { expiresIn: '8h' });
   res.json({ token, role: u.role });
 }));
@@ -124,6 +131,77 @@ app.get('/api/payroll/preview', auth('ADMIN', 'PAYROLL'), wrap(async (req, res) 
     return { employee_no: r.employee_no, name: r.name, days, reg_hours: reg, ot_hours: ot,
              basic_pay: +basic.toFixed(2), ot_pay: +otPay.toFixed(2), gross_pay: +(basic + otPay).toFixed(2) };
   }));
+}));
+
+// ---- Account and user management ----
+const MIN_PASSWORD = 8;
+const ROLE_CODES = ['ADMIN', 'HR', 'PAYROLL', 'SUPERVISOR', 'EMPLOYEE'];
+
+// Any logged-in user can change their own password
+app.post('/api/me/password', auth(), wrap(async (req, res) => {
+  const { current_password, new_password } = req.body;
+  if (!new_password || new_password.length < MIN_PASSWORD) {
+    return res.status(400).json({ error: `New password must be at least ${MIN_PASSWORD} characters` });
+  }
+  const { rows } = await pool.query('SELECT password_hash FROM users WHERE id = $1', [req.user.id]);
+  if (!rows[0] || !(await bcrypt.compare(current_password || '', rows[0].password_hash))) {
+    return res.status(400).json({ error: 'Current password is incorrect' });
+  }
+  await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [await bcrypt.hash(new_password, 10), req.user.id]);
+  res.json({ ok: true });
+}));
+
+app.get('/api/users', auth('ADMIN'), wrap(async (_req, res) => {
+  const { rows } = await pool.query(
+    `SELECT u.id, u.email, u.is_active, u.last_login_at, r.code AS role,
+            e.employee_no, e.first_name || ' ' || e.last_name AS employee_name
+     FROM users u JOIN roles r ON r.id = u.role_id
+     LEFT JOIN employees e ON e.id = u.employee_id
+     ORDER BY u.email`);
+  res.json(rows);
+}));
+
+app.post('/api/users', auth('ADMIN'), wrap(async (req, res) => {
+  const { email, password, role, employee_id } = req.body;
+  if (!email || !ROLE_CODES.includes(role)) return res.status(400).json({ error: 'Email and a valid role are required' });
+  if (!password || password.length < MIN_PASSWORD) {
+    return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD} characters` });
+  }
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO users (email, password_hash, role_id, employee_id)
+       VALUES ($1, $2, (SELECT id FROM roles WHERE code = $3), $4) RETURNING id`,
+      [email.trim().toLowerCase(), await bcrypt.hash(password, 10), role, employee_id || null]);
+    res.status(201).json(rows[0]);
+  } catch (e) {
+    if (e.code === '23505') return res.status(409).json({ error: 'That email is already in use' });
+    throw e;
+  }
+}));
+
+// Change a user's role or active status
+app.patch('/api/users/:id', auth('ADMIN'), wrap(async (req, res) => {
+  const { role, is_active } = req.body;
+  if (role !== undefined && !ROLE_CODES.includes(role)) return res.status(400).json({ error: 'Invalid role' });
+  // Prevent an admin from locking themselves out
+  if (req.params.id === req.user.id && (is_active === false || (role !== undefined && role !== 'ADMIN'))) {
+    return res.status(400).json({ error: 'You cannot deactivate or demote your own account' });
+  }
+  await pool.query(
+    `UPDATE users SET
+       role_id = COALESCE((SELECT id FROM roles WHERE code = $2), role_id),
+       is_active = COALESCE($3, is_active)
+     WHERE id = $1`, [req.params.id, role ?? null, is_active ?? null]);
+  res.json({ ok: true });
+}));
+
+app.post('/api/users/:id/reset-password', auth('ADMIN'), wrap(async (req, res) => {
+  const { new_password } = req.body;
+  if (!new_password || new_password.length < MIN_PASSWORD) {
+    return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD} characters` });
+  }
+  await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [await bcrypt.hash(new_password, 10), req.params.id]);
+  res.json({ ok: true });
 }));
 
 app.listen(process.env.PORT || 3000, () => console.log('Server running'));

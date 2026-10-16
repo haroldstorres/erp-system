@@ -149,20 +149,98 @@ function Payroll() {
   </>);
 }
 
+function Account() {
+  const blank = { current_password: '', new_password: '', confirm: '' };
+  const [f, setF] = useState(blank);
+  const [msg, setMsg] = useState('');
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const submit = async () => {
+    if (f.new_password !== f.confirm) return setMsg('New passwords do not match');
+    try {
+      await api('/me/password', { method: 'POST', body: { current_password: f.current_password, new_password: f.new_password } });
+      setF(blank); setMsg('Password updated.');
+    } catch (e) { setMsg(e.message); }
+  };
+  return (
+    <div className="card" style={{ maxWidth: 420 }}>
+      <h3>Change password</h3>
+      <input type="password" placeholder="Current password" value={f.current_password} onChange={set('current_password')} /><br />
+      <input type="password" placeholder="New password (min. 8 characters)" value={f.new_password} onChange={set('new_password')} /><br />
+      <input type="password" placeholder="Confirm new password" value={f.confirm} onChange={set('confirm')} /><br />
+      <button className="primary" onClick={submit}>Update password</button>
+      {msg && <div className="err">{msg}</div>}
+    </div>
+  );
+}
+
+function Users() {
+  const roles = ['ADMIN', 'HR', 'PAYROLL', 'SUPERVISOR', 'EMPLOYEE'];
+  const [users, setUsers] = useState([]);
+  const [employees, setEmployees] = useState([]);
+  const [form, setForm] = useState({ email: '', password: '', role: 'EMPLOYEE', employee_id: '' });
+  const [error, setError] = useState('');
+  const load = () => Promise.all([api('/users'), api('/employees')])
+    .then(([u, e]) => { setUsers(u); setEmployees(e); }).catch((e) => setError(e.message));
+  useEffect(() => { load(); }, []);
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+  const run = async (fn) => { try { await fn(); setError(''); load(); } catch (e) { setError(e.message); } };
+  const create = () => run(async () => {
+    await api('/users', { method: 'POST', body: form });
+    setForm({ email: '', password: '', role: 'EMPLOYEE', employee_id: '' });
+  });
+  const patch = (id, body) => run(() => api('/users/' + id, { method: 'PATCH', body }));
+  const reset = (u) => {
+    const pw = window.prompt('New password for ' + u.email + ' (min. 8 characters):');
+    if (pw) run(() => api('/users/' + u.id + '/reset-password', { method: 'POST', body: { new_password: pw } }));
+  };
+  return (<>
+    <div className="card">
+      <h3>Create user</h3>
+      <input placeholder="Email" value={form.email} onChange={set('email')} />
+      <input type="password" placeholder="Temporary password" value={form.password} onChange={set('password')} />
+      <select value={form.role} onChange={set('role')}>{roles.map((r) => <option key={r} value={r}>{r}</option>)}</select>
+      <select value={form.employee_id} onChange={set('employee_id')}>
+        <option value="">No linked employee</option>
+        {employees.map((e) => <option key={e.id} value={e.id}>{e.employee_no} - {e.first_name} {e.last_name}</option>)}
+      </select>
+      <button className="primary" onClick={create}>Create</button>
+      {error && <div className="err">{error}</div>}
+    </div>
+    <div className="card wide"><table>
+      <thead><tr><th>Email</th><th>Employee</th><th>Role</th><th>Status</th><th>Last login</th><th></th></tr></thead>
+      <tbody>{users.map((u) => (
+        <tr key={u.id}>
+          <td>{u.email}</td>
+          <td>{u.employee_no ? u.employee_no + ' - ' + u.employee_name : '-'}</td>
+          <td><select value={u.role} onChange={(e) => patch(u.id, { role: e.target.value })}>{roles.map((r) => <option key={r} value={r}>{r}</option>)}</select></td>
+          <td>{u.is_active ? 'Active' : 'Inactive'}</td>
+          <td>{u.last_login_at ? new Date(u.last_login_at).toLocaleString() : 'Never'}</td>
+          <td>
+            <button onClick={() => patch(u.id, { is_active: !u.is_active })}>{u.is_active ? 'Deactivate' : 'Activate'}</button>{' '}
+            <button onClick={() => reset(u)}>Reset password</button>
+          </td>
+        </tr>
+      ))}</tbody>
+    </table></div>
+  </>);
+}
+
 function App() {
   const [role, setRole] = useState(localStorage.getItem('role'));
   const [tab, setTab] = useState('attendance');
   if (!role) return <Login onLogin={setRole} />;
   const tabs = [['attendance', 'Attendance'],
     ...(['ADMIN', 'HR', 'PAYROLL'].includes(role) ? [['employees', 'Employees']] : []),
-    ...(['ADMIN', 'PAYROLL'].includes(role) ? [['payroll', 'Payroll']] : [])];
+    ...(['ADMIN', 'PAYROLL'].includes(role) ? [['payroll', 'Payroll']] : []),
+    ...(role === 'ADMIN' ? [['users', 'Users']] : []),
+    ['account', 'Account']];
   const logout = () => { localStorage.clear(); setRole(null); };
   return (<>
     <header>
       <nav>{tabs.map(([k, label]) => <button key={k} className={tab === k ? 'active' : ''} onClick={() => setTab(k)}>{label}</button>)}</nav>
       <button className="primary" onClick={logout}>Sign out</button>
     </header>
-    <main>{tab === 'attendance' && <Attendance />}{tab === 'employees' && <Employees />}{tab === 'payroll' && <Payroll />}</main>
+    <main>{tab === 'attendance' && <Attendance />}{tab === 'employees' && <Employees />}{tab === 'payroll' && <Payroll />}{tab === 'users' && <Users />}{tab === 'account' && <Account />}</main>
   </>);
 }
 

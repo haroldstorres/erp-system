@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plant ERP - HR & Payroll</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; background: #f4f6f8; color: #1f2933; }
+  header { background: #0f3d3e; color: #fff; padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; }
+  nav button { background: none; border: none; color: #cfe3e3; padding: 8px 12px; cursor: pointer; font-size: 15px; }
+  nav button.active { color: #fff; border-bottom: 2px solid #fff; }
+  main { max-width: 960px; margin: 20px auto; padding: 0 16px; }
+  .card { background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 8px; border-bottom: 1px solid #e4e7eb; }
+  input, select { padding: 8px; margin: 4px 6px 4px 0; border: 1px solid #cbd2d9; border-radius: 4px; }
+  button.primary { background: #0f3d3e; color: #fff; border: none; padding: 9px 16px; border-radius: 4px; cursor: pointer; }
+  .err { color: #b42318; margin: 8px 0; }
+  .wide { overflow-x: auto; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+// Small fetch wrapper that attaches the saved token
+async function api(path, opts = {}) {
+  const res = await fetch('/api' + path, {
+    method: opts.method || 'GET',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (localStorage.getItem('token') || '') },
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+const money = (n) => Number(n).toLocaleString('en-PH', { minimumFractionDigits: 2 });
+
+function Login({ onLogin }) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const submit = async () => {
+    try {
+      const { token, role } = await api('/login', { method: 'POST', body: { email, password } });
+      localStorage.setItem('token', token);
+      localStorage.setItem('role', role);
+      onLogin(role);
+    } catch (e) { setError(e.message); }
+  };
+  return (
+    <main><div className="card" style={{ maxWidth: 360, margin: '60px auto' }}>
+      <h2>Sign in</h2>
+      <input placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} /><br />
+      <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} /><br />
+      {error && <div className="err">{error}</div>}
+      <button className="primary" onClick={submit}>Sign in</button>
+    </div></main>
+  );
+}
+
+function Employees() {
+  const [rows, setRows] = useState([]);
+  const [form, setForm] = useState({ employee_no: '', first_name: '', last_name: '', date_hired: '', pay_basis: 'DAILY', basic_rate: '' });
+  const [error, setError] = useState('');
+  const load = () => api('/employees').then(setRows).catch((e) => setError(e.message));
+  useEffect(() => { load(); }, []);
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+  const add = async () => {
+    try { await api('/employees', { method: 'POST', body: form }); setError(''); load(); }
+    catch (e) { setError(e.message); }
+  };
+  return (<>
+    <div className="card">
+      <h3>Add employee</h3>
+      <input placeholder="Employee no." value={form.employee_no} onChange={set('employee_no')} />
+      <input placeholder="First name" value={form.first_name} onChange={set('first_name')} />
+      <input placeholder="Last name" value={form.last_name} onChange={set('last_name')} />
+      <input type="date" value={form.date_hired} onChange={set('date_hired')} />
+      <select value={form.pay_basis} onChange={set('pay_basis')}>
+        <option value="MONTHLY">Monthly</option><option value="DAILY">Daily</option><option value="HOURLY">Hourly</option>
+      </select>
+      <input type="number" placeholder="Basic rate" value={form.basic_rate} onChange={set('basic_rate')} />
+      <button className="primary" onClick={add}>Save</button>
+      {error && <div className="err">{error}</div>}
+    </div>
+    <div className="card wide"><table>
+      <thead><tr><th>No.</th><th>Name</th><th>Status</th><th>Pay basis</th><th>Rate</th></tr></thead>
+      <tbody>{rows.map((r) => (
+        <tr key={r.id}><td>{r.employee_no}</td><td>{r.first_name} {r.last_name}</td><td>{r.status}</td><td>{r.pay_basis}</td><td>{money(r.basic_rate)}</td></tr>
+      ))}</tbody>
+    </table></div>
+  </>);
+}
+
+function Attendance() {
+  const [rows, setRows] = useState([]);
+  const [msg, setMsg] = useState('');
+  const load = () => api('/attendance/me').then(setRows).catch((e) => setMsg(e.message));
+  useEffect(() => { load(); }, []);
+  const punch = async (direction) => {
+    try { await api('/attendance/punch', { method: 'POST', body: { direction } }); setMsg(direction === 'IN' ? 'Timed in.' : 'Timed out.'); load(); }
+    catch (e) { setMsg(e.message); }
+  };
+  const t = (v) => (v ? new Date(v).toLocaleTimeString() : '-');
+  return (<>
+    <div className="card">
+      <h3>Time clock</h3>
+      <button className="primary" onClick={() => punch('IN')}>Time in</button>{' '}
+      <button className="primary" onClick={() => punch('OUT')}>Time out</button>
+      <div>{msg}</div>
+    </div>
+    <div className="card wide"><table>
+      <thead><tr><th>Date</th><th>In</th><th>Out</th><th>Regular hrs</th><th>OT hrs</th></tr></thead>
+      <tbody>{rows.map((r) => (
+        <tr key={r.work_date}><td>{r.work_date.slice(0, 10)}</td><td>{t(r.time_in)}</td><td>{t(r.time_out)}</td><td>{r.regular_hours}</td><td>{r.overtime_hours}</td></tr>
+      ))}</tbody>
+    </table></div>
+  </>);
+}
+
+function Payroll() {
+  const [range, setRange] = useState({ from: '', to: '' });
+  const [rows, setRows] = useState([]);
+  const [error, setError] = useState('');
+  const run = async () => {
+    try { setRows(await api(`/payroll/preview?from=${range.from}&to=${range.to}`)); setError(''); }
+    catch (e) { setError(e.message); }
+  };
+  return (<>
+    <div className="card">
+      <h3>Payroll preview (gross pay only)</h3>
+      <input type="date" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} />
+      <input type="date" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} />
+      <button className="primary" onClick={run}>Compute</button>
+      {error && <div className="err">{error}</div>}
+    </div>
+    <div className="card wide"><table>
+      <thead><tr><th>No.</th><th>Name</th><th>Days</th><th>Reg hrs</th><th>OT hrs</th><th>Basic</th><th>OT pay</th><th>Gross</th></tr></thead>
+      <tbody>{rows.map((r) => (
+        <tr key={r.employee_no}><td>{r.employee_no}</td><td>{r.name}</td><td>{r.days}</td><td>{r.reg_hours}</td><td>{r.ot_hours}</td>
+          <td>{money(r.basic_pay)}</td><td>{money(r.ot_pay)}</td><td><b>{money(r.gross_pay)}</b></td></tr>
+      ))}</tbody>
+    </table></div>
+  </>);
+}
+
+function App() {
+  const [role, setRole] = useState(localStorage.getItem('role'));
+  const [tab, setTab] = useState('attendance');
+  if (!role) return <Login onLogin={setRole} />;
+  const tabs = [['attendance', 'Attendance'],
+    ...(['ADMIN', 'HR', 'PAYROLL'].includes(role) ? [['employees', 'Employees']] : []),
+    ...(['ADMIN', 'PAYROLL'].includes(role) ? [['payroll', 'Payroll']] : [])];
+  const logout = () => { localStorage.clear(); setRole(null); };
+  return (<>
+    <header>
+      <nav>{tabs.map(([k, label]) => <button key={k} className={tab === k ? 'active' : ''} onClick={() => setTab(k)}>{label}</button>)}</nav>
+      <button className="primary" onClick={logout}>Sign out</button>
+    </header>
+    <main>{tab === 'attendance' && <Attendance />}{tab === 'employees' && <Employees />}{tab === 'payroll' && <Payroll />}</main>
+  </>);
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
